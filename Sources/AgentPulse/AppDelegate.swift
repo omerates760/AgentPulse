@@ -62,7 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: "AgentPulse")
+            button.image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "AgentPulse")
             button.image?.size = NSSize(width: 16, height: 16)
             button.image?.isTemplate = true
             button.action = #selector(statusItemClicked)
@@ -184,10 +184,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             iconName = "questionmark.circle.fill"
             tintColor = .systemPurple
         } else if sessions.contains(where: { $0.isActive }) {
-            iconName = "circle.grid.2x2.fill"
+            iconName = "circle.hexagongrid.fill"
             tintColor = .systemCyan
         } else {
-            iconName = "circle.grid.2x2"
+            iconName = "circle.hexagongrid"
             tintColor = .labelColor
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "AgentPulse")
             button.image?.size = NSSize(width: 16, height: 16)
