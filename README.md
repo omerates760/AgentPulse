@@ -1,16 +1,19 @@
 # AgentPulse
 
-A **Dynamic Island** for your AI coding tools on macOS. Monitor all your AI agent sessions from the notch — approve permissions, answer questions, and jump to terminals without context switching.
+> **A Dynamic Island for your AI coding tools on macOS.**
+
+Monitor all your AI agent sessions from the MacBook notch — approve permissions, answer questions, and jump to terminals without context switching.
 
 ![macOS](https://img.shields.io/badge/macOS-13.0+-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-5.8-orange?logo=swift)
 ![License](https://img.shields.io/badge/license-MIT-blue)
+![GitHub stars](https://img.shields.io/github/stars/omerates760/AgentPulse?style=social)
 
----
+### Why AgentPulse?
 
-## What is AgentPulse?
+Running multiple AI coding agents (Claude Code, Cursor, Codex, Gemini) means constantly switching between terminal tabs to check status, approve permissions, or answer questions. **AgentPulse eliminates this context switching** by bringing everything to your notch — like iPhone's Dynamic Island, but for AI coding workflows.
 
-AgentPulse lives in your macOS notch area and tracks every AI coding agent running on your machine. It shows real-time session status, handles permission approvals, and lets you answer Claude's questions — all without leaving your current window.
+**Zero config.** Install, launch, and it just works. Hooks are installed automatically.
 
 ### Supported Agents
 | Agent | Status |
@@ -158,3 +161,7 @@ Contributions are welcome! Feel free to open issues or submit pull requests.
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+<sub>**Keywords:** macOS menu bar app, Dynamic Island macOS, Claude Code monitor, AI agent dashboard, notch app, coding assistant monitor, Cursor agent tracker, Codex session manager, Gemini CLI monitor, developer productivity, macOS notch utility, SwiftUI menu bar, AI coding workflow, terminal session tracker, permission approval from notch</sub>
