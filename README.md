@@ -16,15 +16,12 @@ AgentPulse lives in your macOS notch area and tracks every AI coding agent runni
 | Agent | Status |
 |-------|--------|
 | Claude Code | Full support (hooks + approvals + questions) |
-| Cursor | Full support |
-| Codex | Full support |
-| Gemini CLI | Full support |
-| OpenCode | Supported |
-| Droid | Supported |
-| Qoder | Supported |
+| Cursor | Full support (hooks + approvals) |
+| Codex | Full support (hooks + approvals) |
+| Gemini CLI | Full support (hooks + approvals) |
 
 ### Supported Terminals & IDEs
-iTerm2, Apple Terminal, Warp, Ghostty, VS Code, Cursor, Kitty, Hyper, Windsurf, Alacritty, tmux, and more.
+iTerm2, Apple Terminal, VS Code, Cursor, Warp, Ghostty, Kitty
 
 ---
 
