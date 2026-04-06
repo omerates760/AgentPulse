@@ -64,8 +64,9 @@ cp "$BUILD_DIR/agent-pulse-bridge" "$CONTENTS/Helpers/agent-pulse-bridge"
 chmod +x "$CONTENTS/MacOS/$APP_NAME"
 chmod +x "$CONTENTS/Helpers/agent-pulse-bridge"
 
-# Copy Info.plist
+# Copy Info.plist and icon
 cp "Resources/Info.plist" "$CONTENTS/Info.plist"
+cp "Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns" 2>/dev/null || true
 
 # Create PkgInfo
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
