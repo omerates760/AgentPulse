@@ -25,7 +25,6 @@ class NotchViewModel: ObservableObject {
     @Published var showOnboarding = false
     @Published var showSettings = false
     @Published var showLicense = false
-    @Published var shouldForceExpand = false
 
     // MARK: - Settings
     @Published var soundEnabled: Bool {
@@ -284,33 +283,9 @@ class NotchViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Auto-expand when first session arrives
-        sessionStore.$sessions
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] sessions in
-                guard let self = self else { return }
-                let activeCount = sessions.filter { $0.isActive && !$0.isHidden }.count
-                if activeCount > 0 && !self.isExpanded {
-                    self.shouldForceExpand = true
-                }
-            }
-            .store(in: &cancellables)
-
-        // Auto-expand on permission request
-        sessionStore.$activePermissions
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] perms in
-                if !perms.isEmpty { self?.expand() }
-            }
-            .store(in: &cancellables)
-
-        // Auto-expand on question
-        sessionStore.$activeQuestions
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] questions in
-                if !questions.isEmpty { self?.expand() }
-            }
-            .store(in: &cancellables)
+        // Auto-expand is handled by NotchWindowController (with SmartSuppression).
+        // ViewModel must NOT expand independently — it would cause a state mismatch
+        // where viewModel.isExpanded=true but the physical panel is still collapsed.
     }
 
     private func scheduleAutoCollapse() {

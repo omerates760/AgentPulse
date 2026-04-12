@@ -11,6 +11,21 @@ struct SettingsView: View {
     @State private var smartSuppressionEnabled: Bool = UserDefaults.standard.bool(forKey: "smartSuppressionEnabled")
     @State private var feedbackText: String = ""
 
+    // MARK: - Remote Control (Telegram) state
+
+    enum TelegramStatus: Equatable {
+        case idle
+        case connecting
+        case waitingForPairing(botUsername: String)
+        case paired
+        case error(String)
+    }
+
+    @State private var telegramEnabled: Bool = RemoteControlSettings.telegramEnabled
+    @State private var telegramToken: String = RemoteControlSecretsStore.telegramToken() ?? ""
+    @State private var telegramChatIdDisplay: String = RemoteControlSettings.telegramChatId.map(String.init) ?? ""
+    @State private var telegramStatus: TelegramStatus = (RemoteControlSettings.telegramChatId != nil ? .paired : .idle)
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
@@ -28,10 +43,11 @@ struct SettingsView: View {
                                 UserDefaults.standard.set(newValue, forKey: "smartSuppressionEnabled")
                             }
 
-                        Text("Don't play sounds when terminal is in focus")
+                        Text("Don't pop the panel, play sounds, or send Telegram notifications when a terminal/IDE is in focus")
                             .font(.system(size: 9))
                             .foregroundColor(.white.opacity(0.3))
                             .padding(.leading, 22)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -108,6 +124,66 @@ struct SettingsView: View {
                         .cornerRadius(6)
                     }
                     .buttonStyle(.plain)
+                }
+
+                // MARK: - Remote Control
+
+                settingsSection("Remote Control") {
+                    toggleRow("Telegram Bot", isOn: $telegramEnabled, icon: "paperplane")
+                        .onChange(of: telegramEnabled) { newValue in
+                            RemoteControlSettings.telegramEnabled = newValue
+                            RemoteControlService.shared.reloadAdapter(identifier: "telegram")
+                            if !newValue { telegramStatus = .idle }
+                        }
+
+                    if telegramEnabled {
+                        SecureField("Bot token from @BotFather", text: $telegramToken)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(8)
+                            .background(Color.white.opacity(0.06))
+                            .cornerRadius(6)
+
+                        HStack(spacing: 8) {
+                            Button(action: connectTelegram) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: connectButtonIcon)
+                                        .font(.system(size: 9))
+                                    Text(connectButtonLabel)
+                                        .font(.system(size: 10, weight: .medium))
+                                }
+                                .foregroundColor(.cyan)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.cyan.opacity(0.12))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(connectButtonDisabled)
+                            .opacity(connectButtonDisabled ? 0.5 : 1.0)
+
+                            if case .paired = telegramStatus {
+                                Button(action: unpairTelegram) {
+                                    Text("Unpair")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.red.opacity(0.7))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.red.opacity(0.12))
+                                        .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        telegramStatusRow
+
+                        Text("Create a bot via @BotFather on Telegram, paste the token, tap Connect, then send /start to your bot from your phone.")
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.3))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 // MARK: - Feedback
@@ -299,5 +375,125 @@ struct SettingsView: View {
     private func exportDiagnostics() {
         let url = DiagnosticLogger.shared.export()
         NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+    }
+
+    // MARK: - Remote Control helpers
+
+    private var connectButtonIcon: String {
+        switch telegramStatus {
+        case .idle, .error:          return "link"
+        case .connecting:            return "ellipsis"
+        case .waitingForPairing:     return "hourglass"
+        case .paired:                return "checkmark.circle.fill"
+        }
+    }
+
+    private var connectButtonLabel: String {
+        switch telegramStatus {
+        case .idle, .error:          return "Connect"
+        case .connecting:            return "Connecting…"
+        case .waitingForPairing:     return "Waiting for /start…"
+        case .paired:                return "Reconnect"
+        }
+    }
+
+    private var connectButtonDisabled: Bool {
+        if telegramToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        switch telegramStatus {
+        case .connecting, .waitingForPairing: return true
+        default:                              return false
+        }
+    }
+
+    @ViewBuilder
+    private var telegramStatusRow: some View {
+        switch telegramStatus {
+        case .idle:
+            EmptyView()
+        case .connecting:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Contacting Telegram…")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+        case .waitingForPairing(let botUsername):
+            HStack(alignment: .top, spacing: 6) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connected to @\(botUsername)")
+                        .font(.system(size: 9))
+                        .foregroundColor(.green.opacity(0.8))
+                    Text("Open the bot on your phone and send /start to finish pairing.")
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        case .paired:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundColor(.green)
+                    .font(.system(size: 10))
+                Text("Paired — chat \(telegramChatIdDisplay)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+        case .error(let msg):
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
+                    .font(.system(size: 10))
+                Text(msg)
+                    .font(.system(size: 9))
+                    .foregroundColor(.red.opacity(0.8))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func connectTelegram() {
+        let trimmed = telegramToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        RemoteControlSecretsStore.setTelegramToken(trimmed)
+        telegramStatus = .connecting
+
+        Task {
+            guard let adapter = RemoteControlService.shared.telegramAdapter else {
+                await MainActor.run { telegramStatus = .error("Adapter unavailable") }
+                return
+            }
+            do {
+                let username = try await adapter.testConnection()
+                await MainActor.run { telegramStatus = .waitingForPairing(botUsername: username) }
+
+                if let chatId = try await adapter.discoverChatId() {
+                    RemoteControlSettings.telegramChatId = chatId
+                    await MainActor.run {
+                        telegramChatIdDisplay = String(chatId)
+                        telegramStatus = .paired
+                    }
+                    RemoteControlService.shared.reloadAdapter(identifier: "telegram")
+                } else {
+                    await MainActor.run {
+                        telegramStatus = .error("Pairing timed out. Send /start to your bot and try again.")
+                    }
+                }
+            } catch let err as TelegramError {
+                await MainActor.run { telegramStatus = .error(err.errorDescription ?? "Unknown error") }
+            } catch {
+                await MainActor.run { telegramStatus = .error(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func unpairTelegram() {
+        RemoteControlSecretsStore.setTelegramToken(nil)
+        RemoteControlSettings.telegramChatId = nil
+        telegramToken = ""
+        telegramChatIdDisplay = ""
+        telegramStatus = .idle
+        RemoteControlService.shared.reloadAdapter(identifier: "telegram")
     }
 }

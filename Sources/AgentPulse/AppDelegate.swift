@@ -25,6 +25,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start socket server
         sessionStore.start()
 
+        // Start remote control (Telegram, etc.) — must be after sessionStore
+        // so its Combine subscriptions see a fully initialized store.
+        RemoteControlService.shared.start()
+
         // Install hooks
         HookConfigurator.shared.installAll()
 
@@ -51,6 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        sessionStore.saveSessions()
+        RemoteControlService.shared.stop()
         sessionStore.stop()
         KeyboardShortcutManager.shared.unregister()
         DiagnosticLogger.shared.log("AgentPulse terminated")

@@ -260,3 +260,35 @@ final class NotchPanel: NSPanel {
         stopGlowRotation()
     }
 }
+
+// MARK: - NotchHostingView
+
+/// Custom NSHostingView subclass that fixes common NSPanel + SwiftUI issues:
+/// 1. First-click not firing SwiftUI actions (panel not key)
+/// 2. NSHostingView constraint-update re-entrancy crash
+final class NotchHostingView<Content: View>: NSHostingView<Content> {
+
+    private var isUpdatingConstraints = false
+    private var isUpdatingLayout = false
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeKey()
+        super.mouseDown(with: event)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateConstraints() {
+        if isUpdatingConstraints { return }
+        isUpdatingConstraints = true
+        super.updateConstraints()
+        isUpdatingConstraints = false
+    }
+
+    override func layout() {
+        if isUpdatingLayout { return }
+        isUpdatingLayout = true
+        super.layout()
+        isUpdatingLayout = false
+    }
+}

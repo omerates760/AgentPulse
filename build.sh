@@ -33,6 +33,7 @@ swiftc \
   -framework SwiftUI \
   -framework Combine \
   -framework Carbon \
+  -framework CoreServices \
   \
   $SOURCES \
   -o "$BUILD_DIR/$APP_NAME" \

@@ -10,16 +10,10 @@ struct NotchContentView: View {
         ZStack {
             if viewModel.isExpanded {
                 expandedContent
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .opacity
-                    ))
+                    .transition(.blurFade)
             } else {
                 collapsedContent
-                    .transition(.asymmetric(
-                        insertion: .opacity,
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    ))
+                    .transition(.blurFade)
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: viewModel.isExpanded)
@@ -135,25 +129,13 @@ struct NotchContentView: View {
                     .foregroundColor(.purple)
             }
         } else if let first = viewModel.activeSessions.first {
-            // Active session info
+            // Active session info — single MorphText so it persists across state changes
             HStack(spacing: 4) {
-                if first.status == .runningTool, let tool = first.currentTool {
-                    Text(shortToolName(tool))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(.green.opacity(0.8))
-                } else if first.status == .waitingForInput {
-                    Text("Ready")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.cyan.opacity(0.7))
-                } else if first.status == .thinking {
-                    Text("Thinking")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
-                } else {
-                    Text(first.projectName)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                }
+                MorphText(
+                    text: pillStatusText(for: first),
+                    font: .system(size: 9, weight: .medium, design: .monospaced),
+                    color: pillStatusColor(for: first)
+                )
 
                 if viewModel.sessionCount > 1 {
                     Text("·\(viewModel.sessionCount)")
@@ -161,6 +143,29 @@ struct NotchContentView: View {
                         .foregroundColor(.white.opacity(0.35))
                 }
             }
+        }
+    }
+
+    private func pillStatusText(for session: Session) -> String {
+        if session.status == .runningTool, let tool = session.currentTool {
+            return shortToolName(tool)
+        }
+        switch session.status {
+        case .waitingForInput: return "Ready"
+        case .thinking:        return "Thinking"
+        case .processing:      return "Processing"
+        case .compacting:      return "Compacting"
+        default:               return session.projectName
+        }
+    }
+
+    private func pillStatusColor(for session: Session) -> Color {
+        if session.status == .runningTool { return .green.opacity(0.8) }
+        switch session.status {
+        case .waitingForInput: return .cyan.opacity(0.7)
+        case .thinking:        return .white.opacity(0.5)
+        case .processing:      return .white.opacity(0.5)
+        default:               return .white.opacity(0.5)
         }
     }
 
@@ -211,8 +216,10 @@ struct NotchContentView: View {
                     switch viewModel.selectedTab {
                     case .sessions:
                         sessionsTab
+                            .transition(.blurFade)
                     case .settings:
                         SettingsView(viewModel: viewModel)
+                            .transition(.blurFade)
                     }
                 }
                 .padding(.horizontal, 14)

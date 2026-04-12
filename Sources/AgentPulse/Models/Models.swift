@@ -8,7 +8,7 @@ import Carbon
 
 // MARK: - Agent Type
 
-enum AgentType: String, CaseIterable, Identifiable {
+enum AgentType: String, CaseIterable, Identifiable, Codable {
     case claude = "claude"
     case codex = "codex"
     case gemini = "gemini"
@@ -67,7 +67,7 @@ enum AgentType: String, CaseIterable, Identifiable {
 
 // MARK: - Session Status
 
-enum SessionStatus: String {
+enum SessionStatus: String, Codable {
     case waitingForInput   = "waiting_for_input"
     case processing        = "processing"
     case thinking          = "thinking"
@@ -288,11 +288,13 @@ class Session: ObservableObject, Identifiable {
     var parentSessionId: String?
     var terminalBundleId: String?
     var terminalSessionId: String?
+    var tmuxPane: String?
+    var kittyWindowId: String?
 
-    init(id: String, agentType: AgentType, cwd: String? = nil) {
+    init(id: String, agentType: AgentType, cwd: String? = nil, startTime: Date = Date()) {
         self.id = id
         self.agentType = agentType
-        self.startTime = Date()
+        self.startTime = startTime
         self.cwd = cwd
     }
 
@@ -325,6 +327,63 @@ class Session: ObservableObject, Identifiable {
 enum LayoutMode: String {
     case clean = "clean"
     case detailed = "detailed"
+}
+
+// MARK: - Session Snapshot (Persistence)
+
+struct SessionSnapshot: Codable {
+    let id: String
+    let agentType: AgentType
+    let startTime: Date
+    let status: SessionStatus
+    let cwd: String?
+    let title: String?
+    let model: String?
+    let terminalBundleId: String?
+    let terminalSessionId: String?
+    let tmuxPane: String?
+    let kittyWindowId: String?
+    let toolCount: Int
+    let isHidden: Bool
+    let parentSessionId: String?
+    let childAgentIds: [String]
+}
+
+extension Session {
+    func toSnapshot() -> SessionSnapshot {
+        SessionSnapshot(
+            id: id,
+            agentType: agentType,
+            startTime: startTime,
+            status: status,
+            cwd: cwd,
+            title: title,
+            model: model,
+            terminalBundleId: terminalBundleId,
+            terminalSessionId: terminalSessionId,
+            tmuxPane: tmuxPane,
+            kittyWindowId: kittyWindowId,
+            toolCount: toolCount,
+            isHidden: isHidden,
+            parentSessionId: parentSessionId,
+            childAgentIds: childAgentIds
+        )
+    }
+
+    static func from(snapshot s: SessionSnapshot) -> Session {
+        let session = Session(id: s.id, agentType: s.agentType, cwd: s.cwd, startTime: s.startTime)
+        session.status = s.status
+        session.title = s.title
+        session.model = s.model
+        session.terminalBundleId = s.terminalBundleId
+        session.terminalSessionId = s.terminalSessionId
+        session.tmuxPane = s.tmuxPane
+        session.kittyWindowId = s.kittyWindowId
+        session.isHidden = s.isHidden
+        session.parentSessionId = s.parentSessionId
+        session.childAgentIds = s.childAgentIds
+        return session
+    }
 }
 
 // MARK: - Modifier Key Option

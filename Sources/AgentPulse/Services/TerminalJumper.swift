@@ -1,5 +1,5 @@
 // TerminalJumper.swift — AgentPulse
-// Jumps to the correct terminal window/tab for a session via AppleScript
+// Jumps to the correct terminal window/tab for a session
 
 import Foundation
 import AppKit
@@ -13,6 +13,11 @@ class TerminalJumper {
         let bundleId = detectTerminalApp(for: session)
         DiagnosticLogger.shared.log("Jumping to session \(session.id) via \(bundleId)")
 
+        // If session is in tmux, select the right pane first
+        if let tmuxPane = session.tmuxPane {
+            jumpToTmux(pane: tmuxPane)
+        }
+
         switch bundleId {
         case "com.googlecode.iterm2":
             jumpToITerm2(session)
@@ -23,11 +28,13 @@ class TerminalJumper {
         case "com.todesktop.230313mzl4w4u92":
             jumpToCursor(session)
         case "dev.warp.Warp-Stable":
-            jumpToWarp(session)
+            activateApp(bundleId: bundleId)
         case "com.mitchellh.ghostty":
             jumpToGhostty(session)
         case "net.kovidgoyal.kitty":
             jumpToKitty(session)
+        case "org.wezfurlong.wezterm":
+            jumpToWezTerm(session)
         default:
             activateApp(bundleId: bundleId)
         }
@@ -36,30 +43,40 @@ class TerminalJumper {
     // MARK: - Terminal Detection
 
     private func detectTerminalApp(for session: Session) -> String {
-        // Use stored terminal bundle ID from hook event
         if let bundleId = session.terminalBundleId, !bundleId.isEmpty {
-            DiagnosticLogger.shared.log("Terminal from session: \(bundleId)")
             return bundleId
         }
-
-        // Check agent type hints
         if session.agentType == .cursor {
             return "com.todesktop.230313mzl4w4u92"
         }
-
-        // Default to Apple Terminal
         return "com.apple.Terminal"
     }
 
-    // MARK: - iTerm2
+    // MARK: - iTerm2 (tab-level matching)
 
     private func jumpToITerm2(_ session: Session) {
+        guard let sessionId = session.terminalSessionId else {
+            activateApp(bundleId: "com.googlecode.iterm2")
+            return
+        }
+        // ITERM_SESSION_ID format: "w0t0p0:GUID" — extract the GUID
+        let uniqueId = sessionId.split(separator: ":").last.map(String.init) ?? sessionId
+        let escaped = uniqueId.replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
         tell application "iTerm2"
             activate
-            tell current window
-                select
-            end tell
+            repeat with aWindow in windows
+                repeat with aTab in tabs of aWindow
+                    repeat with aSession in sessions of aTab
+                        if unique ID of aSession contains "\(escaped)" then
+                            select aTab
+                            tell aWindow to select
+                            select aSession
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end repeat
         end tell
         """
         runAppleScript(script)
@@ -100,46 +117,92 @@ class TerminalJumper {
         }
     }
 
-    // MARK: - Warp
-
-    private func jumpToWarp(_ session: Session) {
-        activateApp(bundleId: "dev.warp.Warp-Stable")
-    }
-
-    // MARK: - Ghostty
+    // MARK: - Ghostty (window title matching)
 
     private func jumpToGhostty(_ session: Session) {
-        activateApp(bundleId: "com.mitchellh.ghostty")
+        if let cwd = session.cwd {
+            let projectDir = cwd.split(separator: "/").last.map(String.init) ?? cwd
+            let escaped = projectDir.replacingOccurrences(of: "\"", with: "\\\"")
+            let script = """
+            tell application "Ghostty"
+                activate
+                set allWindows to every window
+                repeat with w in allWindows
+                    if name of w contains "\(escaped)" then
+                        set index of w to 1
+                        return
+                    end if
+                end repeat
+            end tell
+            """
+            runAppleScript(script)
+        } else {
+            activateApp(bundleId: "com.mitchellh.ghostty")
+        }
     }
 
-    // MARK: - Kitty
+    // MARK: - Kitty (remote control)
 
     private func jumpToKitty(_ session: Session) {
+        guard let windowId = session.kittyWindowId else {
+            activateApp(bundleId: "net.kovidgoyal.kitty")
+            return
+        }
+        if let kittenBin = findExecutable("kitten") ?? findExecutable("kitty") {
+            let args = kittenBin.hasSuffix("kitten")
+                ? ["@", "focus-window", "--match", "id:\(windowId)"]
+                : ["@", "focus-window", "--match", "id:\(windowId)"]
+            runProcess(kittenBin, arguments: args)
+        }
         activateApp(bundleId: "net.kovidgoyal.kitty")
+    }
+
+    // MARK: - WezTerm (CLI tab matching)
+
+    private func jumpToWezTerm(_ session: Session) {
+        guard let cwd = session.cwd,
+              let weztermBin = findExecutable("wezterm") else {
+            activateApp(bundleId: "org.wezfurlong.wezterm")
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let (output, _) = self.runProcessSync(weztermBin, arguments: ["cli", "list", "--format", "json"])
+            if let data = output?.data(using: .utf8),
+               let panes = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                for pane in panes {
+                    if let paneCwd = pane["cwd"] as? String, paneCwd == cwd,
+                       let tabId = pane["tab_id"] as? Int {
+                        self.runProcessSync(weztermBin, arguments: ["cli", "activate-tab", "--tab-id", "\(tabId)"])
+                        break
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                self.activateApp(bundleId: "org.wezfurlong.wezterm")
+            }
+        }
+    }
+
+    // MARK: - tmux (pane selection)
+
+    private func jumpToTmux(pane: String) {
+        guard let tmuxBin = findExecutable("tmux") else { return }
+        runProcess(tmuxBin, arguments: ["select-window", "-t", pane])
+        runProcess(tmuxBin, arguments: ["select-pane", "-t", pane])
     }
 
     // MARK: - Helpers
 
     private func activateApp(bundleId: String) {
+        if bundleId == "com.apple.Terminal" {
+            jumpToAppleTerminal(Session(id: "", agentType: .unknown))
+            return
+        }
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else {
             DiagnosticLogger.shared.log("App not found: \(bundleId)")
             return
         }
-
-        // For Apple Terminal, use AppleScript which is more reliable
-        if bundleId == "com.apple.Terminal" {
-            let script = """
-            tell application "Terminal"
-                activate
-                if (count of windows) > 0 then
-                    set index of front window to 1
-                end if
-            end tell
-            """
-            runAppleScript(script)
-            return
-        }
-
         app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
     }
 
@@ -164,7 +227,6 @@ class TerminalJumper {
     }
 
     /// Select an option in Claude Code's AskUserQuestion by arrow keys
-    /// optionIndex is 0-based (how many arrow-downs from the first option)
     func selectOptionInTerminal(_ session: Session, optionIndex: Int) {
         let bundleId = detectTerminalApp(for: session)
         DiagnosticLogger.shared.log("Selecting option \(optionIndex) in terminal \(bundleId)")
@@ -189,6 +251,45 @@ class TerminalJumper {
             DiagnosticLogger.shared.log("AppleScript select: \(optionIndex) arrows + enter")
             self.runAppleScript(script)
         }
+    }
+
+    // MARK: - Process Helpers
+
+    private func findExecutable(_ name: String) -> String? {
+        let paths = [
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)",
+            "/usr/bin/\(name)"
+        ]
+        return paths.first(where: { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    private func runProcess(_ path: String, arguments: [String]) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard FileManager.default.fileExists(atPath: path) else { return }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: path)
+            proc.arguments = arguments
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+        }
+    }
+
+    @discardableResult
+    private func runProcessSync(_ path: String, arguments: [String]) -> (String?, Int32) {
+        guard FileManager.default.fileExists(atPath: path) else { return (nil, -1) }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = arguments
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return (String(data: data, encoding: .utf8), proc.terminationStatus)
     }
 
     private func runAppleScript(_ source: String) {

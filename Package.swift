@@ -13,6 +13,7 @@ let package = Package(
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("Combine"),
                 .linkedFramework("Carbon"),
+                .linkedFramework("CoreServices"),
             ]
         ),
         .executableTarget(

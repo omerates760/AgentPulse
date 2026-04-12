@@ -12,6 +12,8 @@ final class NotchWindowController: NSWindowController {
 
     private var cancellables = Set<AnyCancellable>()
     private var clickOutsideMonitor: Any?
+    private var fullscreenTimer: Timer?
+    private var isInFullscreen: Bool = false
 
     // MARK: - Init
 
@@ -24,6 +26,7 @@ final class NotchWindowController: NSWindowController {
         observeViewModel()
         observeScreenChanges()
         observeGlow()
+        startFullscreenObserver()
 
         notchPanel.onHoverChanged = { [weak self] isInside in
             guard let self else { return }
@@ -37,6 +40,7 @@ final class NotchWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
+        fullscreenTimer?.invalidate()
         removeClickOutsideMonitor()
         NotificationCenter.default.removeObserver(self)
     }
@@ -97,7 +101,7 @@ final class NotchWindowController: NSWindowController {
 
     private func setupHostingView() {
         let rootView = NotchContentView(viewModel: viewModel).environment(\.colorScheme, .dark)
-        notchPanel.setHostingView(NSHostingView(rootView: rootView))
+        notchPanel.setHostingView(NotchHostingView(rootView: rootView))
     }
 
     // MARK: - ViewModel Observation
@@ -105,12 +109,20 @@ final class NotchWindowController: NSWindowController {
     private func observeViewModel() {
         SessionStore.shared.$activePermissions
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] perms in if !perms.isEmpty { self?.expand() } }
+            .sink { [weak self] perms in
+                if !perms.isEmpty && !SmartSuppression.shouldSuppress() {
+                    self?.expand()
+                }
+            }
             .store(in: &cancellables)
 
         SessionStore.shared.$activeQuestions
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] qs in if !qs.isEmpty { self?.expand() } }
+            .sink { [weak self] qs in
+                if !qs.isEmpty && !SmartSuppression.shouldSuppress() {
+                    self?.expand()
+                }
+            }
             .store(in: &cancellables)
 
         SessionStore.shared.$sessions
@@ -118,10 +130,10 @@ final class NotchWindowController: NSWindowController {
             .sink { [weak self] sessions in
                 guard let self else { return }
                 let active = sessions.filter { $0.isActive && !$0.isHidden }
-                // Update pill width
+                // Update pill width — does not expand the panel.
+                // Auto-expand is reserved for permission/question events, which
+                // genuinely need attention. New sessions just start activity.
                 self.notchPanel.updateCollapsedState(hasActive: !active.isEmpty)
-                // Auto-expand on first session
-                if !active.isEmpty && !self.notchPanel.isExpanded { self.expand() }
             }
             .store(in: &cancellables)
     }
@@ -159,4 +171,64 @@ final class NotchWindowController: NSWindowController {
     }
 
     @objc private func handleScreenChange(_ n: Notification) { positionPanel() }
+
+    // MARK: - Fullscreen Handling
+
+    private func startFullscreenObserver() {
+        // Primary: space change notification (fires on fullscreen enter/exit)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(spaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil
+        )
+        // Backup: periodic poll for edge cases
+        fullscreenTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.checkFullscreen()
+        }
+    }
+
+    @objc private func spaceChanged(_ n: Notification) {
+        checkFullscreen()
+    }
+
+    private func checkFullscreen() {
+        let isFS = isAnyAppFullscreen()
+        guard isFS != isInFullscreen else { return }
+        isInFullscreen = isFS
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if isFS {
+                self.notchPanel.orderOut(nil)
+            } else {
+                self.positionPanel()
+                self.notchPanel.orderFrontRegardless()
+            }
+        }
+    }
+
+    private func isAnyAppFullscreen() -> Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return false }
+        let pid = frontApp.processIdentifier
+
+        let options = CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])
+        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return false }
+        let screenFrame = screen.frame
+
+        for windowInfo in windowList {
+            guard let ownerPID = windowInfo[kCGWindowOwnerPID as String] as? Int32,
+                  ownerPID == pid,
+                  let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat] else {
+                continue
+            }
+            let windowWidth = boundsDict["Width"] ?? 0
+            let windowHeight = boundsDict["Height"] ?? 0
+            if windowWidth >= screenFrame.width && windowHeight >= screenFrame.height {
+                return true
+            }
+        }
+        return false
+    }
 }

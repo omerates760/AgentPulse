@@ -51,34 +51,12 @@ class SoundManager {
         set { UserDefaults.standard.set(newValue, forKey: "soundPacksEnabled") }
     }
 
-    var smartSuppressionEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "smartSuppressionEnabled") }
-        set { UserDefaults.standard.set(newValue, forKey: "smartSuppressionEnabled") }
-    }
-
-    /// Bundle identifiers for terminal and code-editor apps that trigger smart suppression.
-    private let terminalBundleIds: Set<String> = [
-        "com.apple.Terminal",
-        "com.googlecode.iterm2",
-        "dev.warp.Warp-Stable",
-        "com.mitchellh.ghostty",
-        "net.kovidgoyal.kitty",
-        "com.microsoft.VSCode",
-        "com.todesktop.230313mzl4w4u92"
-    ]
-
     private init() {}
 
     func play(_ event: SoundEvent) {
         guard soundEnabled else { return }
-
-        // Smart suppression: skip sound when a terminal / code editor is in focus
-        if smartSuppressionEnabled {
-            if let frontApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-               terminalBundleIds.contains(frontApp) {
-                return
-            }
-        }
+        // Smart suppression: skip sound when a terminal / code editor is in focus.
+        if SmartSuppression.shouldSuppress() { return }
 
         let soundName = event.systemSoundName
         if let sound = NSSound(named: NSSound.Name(soundName)) {

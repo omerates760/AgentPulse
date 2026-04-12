@@ -4,6 +4,7 @@
 import Foundation
 import Combine
 import AppKit
+import CoreServices
 
 class SessionStore: ObservableObject {
     static let shared = SessionStore()
@@ -14,6 +15,7 @@ class SessionStore: ObservableObject {
 
     private let socketServer = SocketServer()
     private var cancellables = Set<AnyCancellable>()
+    private var fsEventsWatcher: FSEventsWatcher?
 
     var activeSessions: [Session] {
         sessions.filter { $0.isActive && !$0.isHidden }
@@ -35,26 +37,51 @@ class SessionStore: ObservableObject {
         !activeQuestions.isEmpty
     }
 
+    private let persistencePath = NSHomeDirectory() + "/.agent-pulse/sessions.json"
+
     private init() {
         socketServer.delegate = self
+        restoreSessions()
+
+        // Auto-save on session changes (debounced)
+        $sessions
+            .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.saveSessions() }
+            .store(in: &cancellables)
     }
 
     func start() {
         socketServer.start()
+        startFSEventsWatcher()
     }
 
     func stop() {
+        fsEventsWatcher?.stop()
         socketServer.stop()
     }
 
     // MARK: - Permission Actions
 
     func approvePermission(_ permission: PermissionRequest) {
+        // Also approve any other pending permissions for the same session
+        // (Claude Code may fire multiple hooks for parallel tool calls)
+        let siblings = activePermissions.filter {
+            $0.sessionId == permission.sessionId && $0.id != permission.id
+        }
         sendPermissionReply(permission, allow: true, always: false)
+        for sibling in siblings {
+            sendPermissionReply(sibling, allow: true, always: false)
+        }
     }
 
     func alwaysAllowPermission(_ permission: PermissionRequest) {
+        let siblings = activePermissions.filter {
+            $0.sessionId == permission.sessionId && $0.id != permission.id
+        }
         sendPermissionReply(permission, allow: true, always: true)
+        for sibling in siblings {
+            sendPermissionReply(sibling, allow: true, always: true)
+        }
     }
 
     func denyPermission(_ permission: PermissionRequest) {
@@ -208,6 +235,201 @@ class SessionStore: ObservableObject {
             session.pendingQuestion = nil
         }
     }
+
+    /// Clears stale permissions/questions for a session when a new event
+    /// indicates the agent moved on (user answered in terminal).
+    private func clearStaleRequests(for sessionId: String) {
+        let stalePerms = activePermissions.filter { $0.sessionId == sessionId }
+        let staleQuestions = activeQuestions.filter { $0.sessionId == sessionId }
+
+        if stalePerms.isEmpty && staleQuestions.isEmpty { return }
+
+        for perm in stalePerms {
+            DiagnosticLogger.shared.log("Clearing stale permission \(perm.id) for session \(sessionId)")
+            activePermissions.removeAll { $0.id == perm.id }
+            socketServer.closeAndRemoveConnection(id: perm.id)
+        }
+
+        if !staleQuestions.isEmpty {
+            DiagnosticLogger.shared.log("Clearing \(staleQuestions.count) stale questions for session \(sessionId)")
+            activeQuestions.removeAll { $0.sessionId == sessionId }
+            socketServer.closeAndRemoveConnection(id: "q-\(sessionId)")
+            collectedAnswers.removeValue(forKey: sessionId)
+            answeredQuestionTexts.removeValue(forKey: sessionId)
+            storedOriginalQuestions.removeValue(forKey: sessionId)
+        }
+
+        if let session = sessions.first(where: { $0.id == sessionId }) {
+            session.pendingPermission = nil
+            session.pendingQuestion = nil
+        }
+    }
+
+    // MARK: - Session Persistence
+
+    func saveSessions() {
+        let snapshots = sessions.map { $0.toSnapshot() }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .secondsSince1970
+            encoder.outputFormatting = .prettyPrinted
+            do {
+                let dir = (self.persistencePath as NSString).deletingLastPathComponent
+                try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                let data = try encoder.encode(snapshots)
+                try data.write(to: URL(fileURLWithPath: self.persistencePath), options: .atomic)
+            } catch {
+                DiagnosticLogger.shared.log("Failed to save sessions: \(error)")
+            }
+        }
+    }
+
+    private func restoreSessions() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: persistencePath),
+              let data = fm.contents(atPath: persistencePath) else { return }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        guard let snapshots = try? decoder.decode([SessionSnapshot].self, from: data) else {
+            DiagnosticLogger.shared.log("Failed to decode persisted sessions")
+            return
+        }
+
+        let now = Date()
+        var restored: [Session] = []
+
+        for s in snapshots {
+            let age = now.timeIntervalSince(s.startTime)
+            // Skip ended sessions older than 1 hour
+            if s.status == .ended && age > 3600 { continue }
+            // Skip active sessions older than 6 hours (abandoned)
+            if s.status.isActive && age > 21600 { continue }
+
+            let session = Session.from(snapshot: s)
+            // Mark stale active sessions as ended
+            if s.status.isActive && age > 1800 {
+                session.status = .ended
+            }
+            restored.append(session)
+        }
+
+        if !restored.isEmpty {
+            sessions = restored
+            DiagnosticLogger.shared.log("Restored \(restored.count) sessions from disk")
+        }
+    }
+
+    // MARK: - FSEvents Session Discovery
+
+    private func startFSEventsWatcher() {
+        let claudeProjectsDir = NSHomeDirectory() + "/.claude/projects"
+        guard FileManager.default.fileExists(atPath: claudeProjectsDir) else {
+            DiagnosticLogger.shared.log("No ~/.claude/projects/ directory, skipping FSEvents")
+            return
+        }
+
+        fsEventsWatcher = FSEventsWatcher(paths: [claudeProjectsDir])
+        fsEventsWatcher?.onNewSession = { [weak self] path in
+            self?.handleDiscoveredPath(path)
+        }
+        fsEventsWatcher?.start()
+    }
+
+    private func handleDiscoveredPath(_ path: String) {
+        guard path.hasSuffix(".jsonl") else { return }
+
+        let sessionFile = (path as NSString).lastPathComponent
+        let sessionId = sessionFile.replacingOccurrences(of: ".jsonl", with: "")
+
+        // Don't create if we already know this session
+        if sessions.contains(where: { $0.id == sessionId }) { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var cwd: String?
+            if let handle = FileHandle(forReadingAtPath: path) {
+                let data = handle.readData(ofLength: 4096)
+                handle.closeFile()
+                if let firstLine = String(data: data, encoding: .utf8)?.split(separator: "\n").first,
+                   let json = try? JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any] {
+                    cwd = json["cwd"] as? String
+                }
+            }
+
+            DispatchQueue.main.async {
+                guard let self, !self.sessions.contains(where: { $0.id == sessionId }) else { return }
+                let session = Session(id: sessionId, agentType: .claude, cwd: cwd)
+                session.status = .processing
+                self.sessions.append(session)
+                self.objectWillChange.send()
+                DiagnosticLogger.shared.log("FSEvents discovered session: \(sessionId)")
+            }
+        }
+    }
+
+}
+
+// MARK: - FSEventsWatcher
+
+private class FSEventsWatcher {
+    private var stream: FSEventStreamRef?
+    private let paths: [String]
+    var onNewSession: ((String) -> Void)?
+
+    init(paths: [String]) {
+        self.paths = paths
+    }
+
+    func start() {
+        let pathsCF = paths as CFArray
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        stream = FSEventStreamCreate(
+            nil,
+            fsEventsCallback,
+            &context,
+            pathsCF,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            1.0,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
+        )
+
+        guard let stream else { return }
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        FSEventStreamStart(stream)
+        DiagnosticLogger.shared.log("FSEvents watcher started for \(paths)")
+    }
+
+    func stop() {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+    }
+}
+
+private func fsEventsCallback(
+    streamRef: ConstFSEventStreamRef,
+    clientCallBackInfo: UnsafeMutableRawPointer?,
+    numEvents: Int,
+    eventPaths: UnsafeMutableRawPointer,
+    eventFlags: UnsafePointer<FSEventStreamEventFlags>,
+    eventIds: UnsafePointer<FSEventStreamEventId>
+) {
+    guard let info = clientCallBackInfo else { return }
+    let watcher = Unmanaged<FSEventsWatcher>.fromOpaque(info).takeUnretainedValue()
+    let paths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as! [String]
+    for path in paths {
+        watcher.onNewSession?(path)
+    }
 }
 
 // MARK: - SocketServerDelegate
@@ -244,6 +466,12 @@ extension SessionStore: SocketServerDelegate {
             ?? event["_env_TERM_SESSION_ID"] as? String {
             session.terminalSessionId = termSessionId
         }
+        if let kittyId = event["_env_KITTY_WINDOW_ID"] as? String {
+            session.kittyWindowId = kittyId
+        }
+        if let tmuxPane = event["_env_TMUX_PANE"] as? String {
+            session.tmuxPane = tmuxPane
+        }
 
         // Rate limits
         if let rl = event["rate_limits"] as? [String: Any] {
@@ -259,6 +487,21 @@ extension SessionStore: SocketServerDelegate {
             }
         }
 
+        // If an event arrives that indicates the agent moved past a pending
+        // question/permission, the user must have answered in terminal.
+        // Only clear on events that genuinely mean "agent progressed":
+        let progressEvents: Set<String> = [
+            "PreToolUse", "PostToolUse", "PostToolUseFailure",
+            "UserPromptSubmit", "Stop", "SessionEnd", "StopFailure", "SubagentStop"
+        ]
+        if progressEvents.contains(eventName) {
+            // PreToolUse for AskUserQuestion IS the question itself — don't clear
+            let isAskUserQuestion = eventName == "PreToolUse" && toolName == "AskUserQuestion"
+            if !isAskUserQuestion {
+                clearStaleRequests(for: sessionId)
+            }
+        }
+
         switch eventName {
         case "SessionStart":
             session.status = .processing
@@ -269,15 +512,11 @@ extension SessionStore: SocketServerDelegate {
             // Agent finished its turn, waiting for user input
             session.status = .waitingForInput
             session.currentTool = nil
-            session.pendingPermission = nil
-            session.pendingQuestion = nil
             SoundManager.shared.play(.inputRequired)
             addEvent(to: session, type: "waiting_input", tool: nil, detail: message)
 
         case "SessionEnd", "StopFailure", "SubagentStop":
             session.status = .ended
-            session.pendingPermission = nil
-            session.pendingQuestion = nil
             SoundManager.shared.play(.sessionEnd)
             addEvent(to: session, type: "session_end", tool: nil, detail: nil)
 

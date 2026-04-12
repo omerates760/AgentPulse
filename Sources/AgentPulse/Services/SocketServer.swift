@@ -88,6 +88,11 @@ class SocketServer {
         conn.close()
     }
 
+    func closeAndRemoveConnection(id: String) {
+        guard let conn = pendingConnections.removeValue(forKey: id) else { return }
+        conn.close()
+    }
+
     // MARK: - Private
 
     private func startServer() {
